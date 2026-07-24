@@ -174,9 +174,10 @@ class CartProvider extends ChangeNotifier {
       
       dynamic orderId;
       final targetOrderStatus = isPrinting ? 'printed' : 'active';
-      final targetTableStatus = isPrinting ? 'bill_requested' : 'occupied'; 
-      
-      // ADDED: Join selected comments into a string for DB storage
+      // CHANGED: Instantly set table to vacant when printed, freeing it up for the Captain!
+      final targetTableStatus = isPrinting ? 'vacant' : 'occupied'; 
+
+      // ADD THIS LINE HERE: Combine selected comments into a single string
       final commentsString = _selectedComments.isEmpty ? null : _selectedComments.join(' | ');
 
       if (_currentOrderId == null) {

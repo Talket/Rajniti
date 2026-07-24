@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../services/auth_service.dart';
+import '../../services/printer_service.dart';
 import '../../widgets/add_temp_table_dialog.dart';
 
 class TableGridScreen extends StatefulWidget {
@@ -16,30 +17,49 @@ class _TableGridScreenState extends State<TableGridScreen> {
   final _supabase = Supabase.instance.client;
   List<Map<String, dynamic>> _allAreas = [];
   List<Map<String, dynamic>> _allTables = [];
-  List<Map<String, dynamic>> _runningOrders = []; // ADDED: To store active orders
+  List<Map<String, dynamic>> _runningOrders = []; 
   
-  int? _selectedAreaId;
+  // PERFORMANCE FIX: Replaced setState variable with a ValueNotifier 
+  // to prevent the entire screen from rebuilding during scrolling!
+  final ValueNotifier<int?> _selectedTabNotifier = ValueNotifier(null);
+  
   bool _isLoading = true;
   
   StreamSubscription<List<Map<String, dynamic>>>? _areasSubscription;
   StreamSubscription<List<Map<String, dynamic>>>? _tablesSubscription;
-  StreamSubscription<List<Map<String, dynamic>>>? _ordersSubscription; // ADDED
+  StreamSubscription<List<Map<String, dynamic>>>? _ordersSubscription; 
 
-  final ScrollController _scrollController = ScrollController();
+  static int? _persistedAreaId;
+  static double _persistedScrollOffset = 0.0;
+  
+  bool _isAutoScrolling = false;
+
+  late final ScrollController _scrollController;
   final Map<int, GlobalKey> _areaKeys = {}; 
-  Timer? _timeUpdater; // ADDED: To tick the clock every minute
+  Timer? _timeUpdater; 
 
   @override
   void initState() {
     super.initState();
+    
+    _selectedTabNotifier.value = _persistedAreaId;
+    _scrollController = ScrollController(initialScrollOffset: _persistedScrollOffset);
+    
+    _scrollController.addListener(() {
+      if (_scrollController.hasClients) {
+        _persistedScrollOffset = _scrollController.offset;
+      }
+    });
+
     _listenToAreas();
     _listenToTables();
-    _listenToOrders(); // ADDED
+    _listenToOrders(); 
     
-    // ADDED: Updates the UI every 1 minute so the running time ticks automatically
     _timeUpdater = Timer.periodic(const Duration(minutes: 1), (timer) {
       if (mounted) setState(() {});
     });
+
+    _scrollController.addListener(_onScroll);
   }
 
   @override
@@ -47,9 +67,37 @@ class _TableGridScreenState extends State<TableGridScreen> {
     _areasSubscription?.cancel();
     _tablesSubscription?.cancel();
     _ordersSubscription?.cancel();
+    _scrollController.removeListener(_onScroll); 
     _scrollController.dispose();
     _timeUpdater?.cancel();
+    _selectedTabNotifier.dispose(); // Clean up notifier
     super.dispose();
+  }
+
+  void _onScroll() {
+    if (_isAutoScrolling || _areaKeys.isEmpty) return;
+
+    int? visibleAreaId;
+    double minDistance = double.infinity;
+
+    _areaKeys.forEach((id, key) {
+      final context = key.currentContext;
+      if (context != null) {
+        final renderBox = context.findRenderObject() as RenderBox;
+        final position = renderBox.localToGlobal(Offset.zero).dx;
+        
+        if (position >= -150 && position < minDistance) {
+          minDistance = position;
+          visibleAreaId = id;
+        }
+      }
+    });
+
+    // PERFORMANCE FIX: Updates the tab WITHOUT calling setState()!
+    // This stops the heavy table grid from rebuilding and fixes the lag!
+    if (visibleAreaId != null && _selectedTabNotifier.value != visibleAreaId) {
+      _selectedTabNotifier.value = visibleAreaId;
+    }
   }
 
   void _listenToAreas() {
@@ -58,11 +106,13 @@ class _TableGridScreenState extends State<TableGridScreen> {
         setState(() {
           _allAreas = List<Map<String, dynamic>>.from(data);
           if (_allAreas.isNotEmpty) {
-            if (_selectedAreaId == null || !_allAreas.any((a) => a['id'] == _selectedAreaId)) {
-              _selectedAreaId = _allAreas.first['id'];
+            if (_selectedTabNotifier.value == null || !_allAreas.any((a) => a['id'] == _selectedTabNotifier.value)) {
+              _selectedTabNotifier.value = _allAreas.first['id'];
+              _persistedAreaId = _selectedTabNotifier.value; 
             }
           } else {
-            _selectedAreaId = null;
+            _selectedTabNotifier.value = null;
+            _persistedAreaId = null; 
           }
           _isLoading = false;
         });
@@ -83,12 +133,11 @@ class _TableGridScreenState extends State<TableGridScreen> {
     });
   }
 
-  // ADDED: Stream to track the exact bills and times for running tables
   void _listenToOrders() {
     _ordersSubscription = _supabase.from('orders').stream(primaryKey: ['id']).listen((data) {
       if (mounted) {
          setState(() {
-           final validStatuses = ['active', 'printed', 'bill_requested'];
+           final validStatuses = ['active'];
            _runningOrders = List<Map<String, dynamic>>.from(
              data.where((o) => validStatuses.contains(o['status']))
            );
@@ -114,14 +163,13 @@ class _TableGridScreenState extends State<TableGridScreen> {
 
   Color _getStatusColor(String status) {
     switch (status) {
-      case 'vacant': return Colors.green;
+      case 'vacant': return Colors.teal; 
       case 'occupied': return Colors.redAccent;
       case 'bill_requested': return Colors.orange;
       default: return Colors.grey;
     }
   }
 
-  // ADDED: Calculates minutes since KOT was placed
   String _calculateTime(String? createdAt) {
     if (createdAt == null) return '0 Min';
     final created = DateTime.parse(createdAt);
@@ -129,17 +177,22 @@ class _TableGridScreenState extends State<TableGridScreen> {
     return '${diff.inMinutes} Min';
   }
 
-  void _scrollToArea(int areaId) {
-    setState(() => _selectedAreaId = areaId);
+  Future<void> _scrollToArea(int areaId) async {
+    _selectedTabNotifier.value = areaId;
+    _persistedAreaId = areaId; 
     
     final key = _areaKeys[areaId];
     if (key != null && key.currentContext != null) {
-      Scrollable.ensureVisible(
+      _isAutoScrolling = true;
+      
+      await Scrollable.ensureVisible(
         key.currentContext!,
-        duration: const Duration(milliseconds: 400),
-        curve: Curves.easeInOut,
+        duration: const Duration(milliseconds: 300), // Slightly faster
+        curve: Curves.easeOut, // Smoother glide animation
         alignment: 0.0, 
       );
+      
+      _isAutoScrolling = false;
     }
   }
 
@@ -161,18 +214,31 @@ class _TableGridScreenState extends State<TableGridScreen> {
           areaId = newArea['id'];
         }
 
-        await _supabase.from('tables').insert({
+        final newTable = await _supabase.from('tables').insert({
           'table_number': tableName,
           'area_id': areaId,
           'is_temporary': true,
           'status': 'vacant',
-        });
+        }).select('id').single();
+
+        final newTableId = newTable['id'];
         
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text('Table $tableName created successfully!'), backgroundColor: Colors.green),
           );
+          
           _refreshData(); 
+
+          // CRITICAL FIX: Use 'await' so the app pauses the grid while the captain takes the order
+          await context.push('/captain/order/$newTableId');
+          
+          // Once the KOT is sent and they return, slide the grid perfectly to the Temporary section!
+          if (mounted) {
+            Future.delayed(const Duration(milliseconds: 200), () {
+              if (mounted) _scrollToArea(areaId);
+            });
+          }
         }
 
       } catch (e) {
@@ -197,8 +263,16 @@ class _TableGridScreenState extends State<TableGridScreen> {
       context: context,
       builder: (context) {
         return AlertDialog(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          title: Text('Table $tableNumber - Bill Items', style: const TextStyle(fontWeight: FontWeight.bold)),
+          backgroundColor: Colors.white,
+          surfaceTintColor: Colors.transparent,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          title: Column(
+            children: [
+              Text('Table $tableNumber', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 22)),
+              const Text('Current Order', style: TextStyle(fontSize: 14, color: Colors.grey)),
+              const Divider(height: 24),
+            ],
+          ),
           content: FutureBuilder<List<Map<String, dynamic>>>(
             future: _supabase
                 .from('order_items')
@@ -224,8 +298,9 @@ class _TableGridScreenState extends State<TableGridScreen> {
                 width: double.maxFinite,
                 child: ListView.separated(
                   shrinkWrap: true,
+                  physics: const BouncingScrollPhysics(),
                   itemCount: items.length,
-                  separatorBuilder: (_, __) => const Divider(height: 16),
+                  separatorBuilder: (_, __) => const Divider(height: 16, color: Colors.black12),
                   itemBuilder: (context, index) {
                     final item = items[index];
                     final name = item['menu_items'] != null ? item['menu_items']['name'] : 'Unknown Item';
@@ -236,7 +311,7 @@ class _TableGridScreenState extends State<TableGridScreen> {
                     return Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        Expanded(child: Text('$name  x$qty', style: const TextStyle(fontSize: 16))),
+                        Expanded(child: Text('$name  x$qty', style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w500))),
                         Text('₹${total.toStringAsFixed(2)}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
                       ],
                     );
@@ -245,10 +320,53 @@ class _TableGridScreenState extends State<TableGridScreen> {
               );
             },
           ),
+          actionsPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
           actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('CLOSE', style: TextStyle(color: Colors.grey, fontWeight: FontWeight.bold)),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: () => Navigator.pop(context),
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      side: const BorderSide(color: Colors.grey),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    ),
+                    child: const Text('CLOSE', style: TextStyle(color: Colors.black87, fontWeight: FontWeight.bold)),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: ElevatedButton.icon(
+                    icon: const Icon(Icons.print, size: 18),
+                    label: const Text('Print Bill'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.blueAccent, 
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      elevation: 0,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    ),
+                    onPressed: () async {
+                      Navigator.pop(context);
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('Sending Bill to Admin PC...'), backgroundColor: Colors.blueAccent)
+                      );
+                      try {
+                        final tableId = order['table_id'] ?? 0;
+                        await _supabase.from('orders').update({'status': 'printed'}).eq('id', order['id']);
+                        if (tableId != 0) {
+                          await _supabase.from('tables').update({'status': 'vacant'}).eq('id', tableId);
+                        }
+                      } catch (e) {
+                        if (context.mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red));
+                        }
+                      }
+                    },
+                  ),
+                ),
+              ],
             ),
           ],
         );
@@ -277,80 +395,98 @@ class _TableGridScreenState extends State<TableGridScreen> {
       }
     }
 
-    if (displayAreas.isNotEmpty && (_selectedAreaId == null || !displayAreas.any((a) => a['id'] == _selectedAreaId))) {
-      _selectedAreaId = displayAreas.first['id'];
+    if (displayAreas.isNotEmpty && (_selectedTabNotifier.value == null || !displayAreas.any((a) => a['id'] == _selectedTabNotifier.value))) {
+      _selectedTabNotifier.value = displayAreas.first['id'];
     }
 
     return Scaffold(
-      backgroundColor: Colors.grey[100],
+      backgroundColor: const Color(0xFFF4F6F8),
       appBar: AppBar(
-        title: const Text('Rajniti Dosa', style: TextStyle(fontWeight: FontWeight.bold)),
+        centerTitle: true, // ADDED: Centers the title perfectly
+        title: const Text('Rajniti Dosa', style: TextStyle(fontWeight: FontWeight.bold, letterSpacing: 0.5)),
         backgroundColor: const Color(0xFF1b1d3a),
         foregroundColor: Colors.white,
+        elevation: 2,
+        // CHANGED: Moved Logout to the top left corner using the 'leading' property
+        leading: IconButton(
+          icon: const Icon(Icons.logout, color: Colors.redAccent),
+          tooltip: 'Log Out',
+          onPressed: () async {
+            await AuthService().logout();
+            if (context.mounted) context.go('/login');
+          },
+        ),
         actions: [
           IconButton(
             icon: const Icon(Icons.refresh, color: Colors.white),
-            onPressed: _refreshData,
             tooltip: 'Refresh Data',
+            onPressed: _refreshData,
           ),
-          IconButton(
-            icon: const Icon(Icons.logout, color: Colors.redAccent),
-            onPressed: () async {
-              await AuthService().logout();
-              if (context.mounted) context.go('/login');
-            },
-          )
         ],
       ),
-      floatingActionButton: FloatingActionButton.extended(
+      floatingActionButton: FloatingActionButton(
         onPressed: _showAddTempTableDialog,
-        backgroundColor: Colors.blueGrey,
-        icon: const Icon(Icons.add, color: Colors.white),
-        label: const Text('', style: TextStyle(color: Colors.white)),
+        backgroundColor: const Color(0xFF1b1d3a),
+        elevation: 4,
+        child: const Icon(Icons.add, color: Colors.white, size: 28),
       ),
       body: _isLoading
-          ? const Center(child: CircularProgressIndicator())
+          ? const Center(child: CircularProgressIndicator(color: Color(0xFF1b1d3a)))
           : Column(
               children: [
-                Container(
-                  height: 60,
-                  color: Colors.white,
-                  child: ListView.builder(
-                    scrollDirection: Axis.horizontal,
-                    itemCount: displayAreas.length,
-                    itemBuilder: (context, index) {
-                      final area = displayAreas[index];
-                      final isSelected = area['id'] == _selectedAreaId;
-                      return GestureDetector(
-                        onTap: () => _scrollToArea(area['id']), 
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
-                          decoration: BoxDecoration(
-                            border: Border(
-                              bottom: BorderSide(color: isSelected ? Colors.blueAccent : Colors.transparent, width: 3),
-                            ),
-                          ),
-                          child: Center(
-                            child: Text(
-                              area['name'],
-                              style: TextStyle(
-                                fontSize: 18,
-                                fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-                                color: isSelected ? Colors.blueAccent : Colors.black54,
+                // PERFORMANCE FIX: ValueListenableBuilder isolates the Top Tabs
+                // so they can animate without rebuilding the heavy table layout below!
+                ValueListenableBuilder<int?>(
+                  valueListenable: _selectedTabNotifier,
+                  builder: (context, selectedId, child) {
+                    return Container(
+                      height: 70,
+                      color: Colors.white,
+                      child: ListView.builder(
+                        physics: const BouncingScrollPhysics(),
+                        scrollDirection: Axis.horizontal,
+                        itemCount: displayAreas.length,
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                        itemBuilder: (context, index) {
+                          final area = displayAreas[index];
+                          final isSelected = area['id'] == selectedId;
+                          
+                          return GestureDetector(
+                            onTap: () => _scrollToArea(area['id']), 
+                            child: AnimatedContainer(
+                              duration: const Duration(milliseconds: 250),
+                              margin: const EdgeInsets.only(right: 12),
+                              padding: const EdgeInsets.symmetric(horizontal: 24),
+                              decoration: BoxDecoration(
+                                color: isSelected ? const Color(0xFF1b1d3a) : Colors.transparent,
+                                borderRadius: BorderRadius.circular(30),
+                                border: Border.all(color: isSelected ? const Color(0xFF1b1d3a) : Colors.grey.shade300, width: 1.5),
+                              ),
+                              child: Center(
+                                child: Text(
+                                  area['name'],
+                                  style: TextStyle(
+                                    fontSize: 16,
+                                    fontWeight: isSelected ? FontWeight.bold : FontWeight.w600,
+                                    color: isSelected ? Colors.white : Colors.black54,
+                                    letterSpacing: 0.3,
+                                  ),
+                                ),
                               ),
                             ),
-                          ),
-                        ),
-                      );
-                    },
-                  ),
+                          );
+                        },
+                      ),
+                    );
+                  },
                 ),
                 
                 Expanded(
                   child: displayAreas.isEmpty
-                      ? const Center(child: Text('No areas configured.'))
+                      ? const Center(child: Text('No areas configured.', style: TextStyle(fontSize: 16, color: Colors.grey)))
                       : SingleChildScrollView(
                           controller: _scrollController,
+                          physics: const BouncingScrollPhysics(), 
                           scrollDirection: Axis.horizontal, 
                           padding: const EdgeInsets.all(24),
                           child: Row(
@@ -364,47 +500,39 @@ class _TableGridScreenState extends State<TableGridScreen> {
 
                               return Padding(
                                 key: _areaKeys[areaId], 
-                                padding: const EdgeInsets.only(right: 48), 
+                                padding: const EdgeInsets.only(right: 56), 
                                 child: Column(
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
                                     Text(
                                       area['name'],
-                                      style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.black87),
+                                      style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w800, color: Colors.black87, letterSpacing: 0.5),
                                     ),
-                                    const SizedBox(height: 16),
+                                    const SizedBox(height: 20),
                                     Expanded(
                                       child: tablesInArea.isEmpty
                                           ? const Text('No tables in this area', style: TextStyle(color: Colors.grey))
                                           : Wrap(
                                               direction: Axis.vertical, 
-                                              spacing: 16, 
-                                              runSpacing: 16, 
+                                              spacing: 20, 
+                                              runSpacing: 20, 
                                               children: tablesInArea.map((table) {
                                                 final statusColor = _getStatusColor(table['status']);
                                                 
-                                                // Fetch active order for this table if it exists
                                                 final tableOrders = _runningOrders.where((o) => o['table_id'] == table['id']).toList();
                                                 final activeOrder = tableOrders.isNotEmpty ? tableOrders.first : null;
 
                                                 return SizedBox(
-                                                  width: 150, 
-                                                  height: 150,
+                                                  width: 140, 
+                                                  height: 140,
                                                   child: InkWell(
                                                     onTap: () {
-                                                      if (table['status'] == 'vacant' || table['status'] == 'occupied') {
-                                                        context.go('/captain/order/${table['id']}');
-                                                      } else if (table['status'] == 'bill_requested') {
-                                                        ScaffoldMessenger.of(context).showSnackBar(
-                                                          const SnackBar(content: Text('Waiting for admin to print bill...')),
-                                                        );
-                                                      }
+                                                      context.push('/captain/order/${table['id']}');
                                                     },
                                                     onLongPress: () {
                                                       if (activeOrder != null) {
                                                         _showOrderDetails(activeOrder, table['table_number'].toString());
                                                       } else {
-                                                        // ADDED: Helpful feedback if the table is empty!
                                                         ScaffoldMessenger.of(context).showSnackBar(
                                                           const SnackBar(
                                                             content: Text('No items ordered yet! Tap to place an order first.', style: TextStyle(fontWeight: FontWeight.bold)),
@@ -413,50 +541,67 @@ class _TableGridScreenState extends State<TableGridScreen> {
                                                         );
                                                       }
                                                     },
-                                                    borderRadius: BorderRadius.circular(16),
-                                                    child: Card(
-                                                      elevation: 4,
-                                                      shape: RoundedRectangleBorder(
-                                                        borderRadius: BorderRadius.circular(16), 
-                                                        side: BorderSide(color: statusColor.withOpacity(0.5), width: 3)
-                                                    ),
-                                                    child: Column(
-                                                      mainAxisAlignment: MainAxisAlignment.center,
-                                                      children: [
-                                                        // CHANGED: Show Time if running, else Table Icon
-                                                        if (activeOrder != null)
-                                                          Text(
-                                                            _calculateTime(activeOrder['created_at']),
-                                                            style: TextStyle(fontSize: 20, color: statusColor, fontWeight: FontWeight.bold),
+                                                    borderRadius: BorderRadius.circular(20),
+                                                    child: AnimatedContainer(
+                                                      duration: const Duration(milliseconds: 200),
+                                                      decoration: BoxDecoration(
+                                                        color: activeOrder != null ? statusColor.withOpacity(0.08) : Colors.white,
+                                                        borderRadius: BorderRadius.circular(20),
+                                                        boxShadow: [
+                                                          BoxShadow(
+                                                            color: activeOrder != null ? statusColor.withOpacity(0.2) : Colors.black.withOpacity(0.04),
+                                                            blurRadius: 10,
+                                                            spreadRadius: activeOrder != null ? 2 : 0,
+                                                            offset: const Offset(0, 4),
                                                           )
-                                                        else
-                                                          Icon(Icons.table_restaurant, size: 48, color: statusColor),
-                                                        
-                                                        const SizedBox(height: 12),
-                                                        Text(
-                                                          table['table_number'],
-                                                          style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
-                                                        ),
-                                                        const SizedBox(height: 8),
-                                                        
-                                                        // CHANGED: Show Amount if running, else Status Text
-                                                        if (activeOrder != null)
+                                                        ],
+                                                        border: Border.all(
+                                                          color: activeOrder != null ? statusColor : statusColor.withOpacity(0.3), 
+                                                          width: activeOrder != null ? 2.5 : 1.5
+                                                        )
+                                                      ),
+                                                      child: Column(
+                                                        mainAxisAlignment: MainAxisAlignment.center,
+                                                        children: [
+                                                          if (activeOrder != null)
+                                                            Text(
+                                                              _calculateTime(activeOrder['created_at']),
+                                                              style: TextStyle(fontSize: 18, color: statusColor, fontWeight: FontWeight.w900),
+                                                            )
+                                                          else
+                                                            Container(
+                                                              padding: const EdgeInsets.all(8),
+                                                              decoration: BoxDecoration(
+                                                                color: statusColor.withOpacity(0.1),
+                                                                shape: BoxShape.circle,
+                                                              ),
+                                                              child: Icon(Icons.table_restaurant, size: 36, color: statusColor),
+                                                            ),
+                                                          
+                                                          const SizedBox(height: 12),
                                                           Text(
-                                                            '₹ ${(activeOrder['total_amount'] as num).toStringAsFixed(2)}',
-                                                            style: TextStyle(fontSize: 16, color: statusColor, fontWeight: FontWeight.bold),
-                                                          )
-                                                        else
-                                                          Text(
-                                                            table['status'].toString().toUpperCase().replaceAll('_', ' '),
-                                                            style: TextStyle(fontSize: 12, color: statusColor, fontWeight: FontWeight.bold),
+                                                            table['table_number'],
+                                                            style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w800, color: Colors.black87),
                                                           ),
-                                                      ],
+                                                          const SizedBox(height: 6),
+                                                          
+                                                          if (activeOrder != null)
+                                                            Text(
+                                                              '₹ ${(activeOrder['total_amount'] as num).toStringAsFixed(0)}',
+                                                              style: TextStyle(fontSize: 15, color: statusColor, fontWeight: FontWeight.bold),
+                                                            )
+                                                          else
+                                                            Text(
+                                                              table['status'].toString().toUpperCase().replaceAll('_', ' '),
+                                                              style: TextStyle(fontSize: 11, color: statusColor, fontWeight: FontWeight.bold, letterSpacing: 0.5),
+                                                            ),
+                                                        ],
+                                                      ),
                                                     ),
                                                   ),
-                                                ),
-                                              );
-                                            }).toList(),
-                                          ),
+                                                );
+                                              }).toList(),
+                                            ),
                                     ),
                                   ],
                                 ),

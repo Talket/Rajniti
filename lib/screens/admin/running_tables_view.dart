@@ -391,17 +391,18 @@ class _RunningTablesViewState extends State<RunningTablesView> {
     );
   }
 
+  // TWEAKED: Increased padding and icon size for a larger button
   Widget _cardActionButton(IconData icon, VoidCallback onTap) {
     return GestureDetector(
       onTap: onTap,
       child: Container(
-        padding: const EdgeInsets.all(4), 
+        padding: const EdgeInsets.all(5), // Increased from 4 to 5
         decoration: BoxDecoration(
           color: Colors.white,
           border: Border.all(color: Colors.black87, width: 1.0),
           borderRadius: BorderRadius.circular(6),
         ),
-        child: Icon(icon, size: 16, color: Colors.black87), 
+        child: Icon(icon, size: 20, color: Colors.black87), // Increased from 16 to 20
       ),
     );
   }
@@ -469,15 +470,19 @@ class _RunningTablesViewState extends State<RunningTablesView> {
                             : null,
                   ),
                   child: Center(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        if (hasOrder) Text(timeString, style: const TextStyle(fontSize: 11, color: Colors.black87)),
-                        if (hasOrder) const SizedBox(height: 2),
-                        Text(table['table_number'].toString(), style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.black87)),
-                        if (hasOrder) const SizedBox(height: 2),
-                        if (hasOrder) Text('₹${(order['total_amount'] as num).toStringAsFixed(2)}', style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.black)),
-                      ],
+                    // TWEAKED: Added padding to push text up slightly, preventing overlap with new larger buttons
+                    child: Padding(
+                      padding: EdgeInsets.only(bottom: (hasOrder && !_isMoveMode) ? 20.0 : 0.0),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          if (hasOrder) Text(timeString, style: const TextStyle(fontSize: 11, color: Colors.black87)),
+                          if (hasOrder) const SizedBox(height: 2),
+                          Text(table['table_number'].toString(), style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.black87)),
+                          if (hasOrder) const SizedBox(height: 2),
+                          if (hasOrder) Text('₹${(order['total_amount'] as num).toStringAsFixed(2)}', style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.black)),
+                        ],
+                      ),
                     ),
                   ),
                 ),
@@ -488,8 +493,10 @@ class _RunningTablesViewState extends State<RunningTablesView> {
           if (hasOrder && !_isMoveMode) 
             Positioned(
               bottom: 4, 
-              left: 4, 
+              left: 0, // TWEAKED: Stretches across the full card to allow centering
+              right: 0, // TWEAKED: Stretches across the full card to allow centering
               child: Row(
+                mainAxisAlignment: MainAxisAlignment.center, // TWEAKED: Forces the buttons into the center
                 children: [
                   if (!isPrinted) ...[
                     _cardActionButton(Icons.print_outlined, () async {
@@ -497,14 +504,14 @@ class _RunningTablesViewState extends State<RunningTablesView> {
                       await _supabase.from('tables').update({'status': 'vacant'}).eq('id', table['id']);
                       await PrinterService().printBillForTable(table['id'], orderId: order['id']);
                     }),
-                    const SizedBox(width: 4),
+                    const SizedBox(width: 8), // TWEAKED: Slightly wider gap
                     _cardActionButton(Icons.visibility_outlined, () {
                       context.push('/admin/running/order/${table['id']}?append=false&orderId=${order['id']}');
                     }),
                   ],
                   if (isPrinted) ...[
                     _cardActionButton(Icons.check_circle_outline, () => _showSettleDialog(order, table['table_number'].toString(), isTemp: table['is_temporary'] == true)),
-                    const SizedBox(width: 4),
+                    const SizedBox(width: 8), // TWEAKED: Slightly wider gap
                     _cardActionButton(Icons.visibility_outlined, () {
                       context.push('/admin/running/order/${table['id']}?append=false&orderId=${order['id']}');
                     }),
@@ -613,15 +620,18 @@ class _RunningTablesViewState extends State<RunningTablesView> {
                                           ),
                                           if (!_isMoveMode)
                                             Positioned(
-                                              bottom: 4, left: 4,
+                                              bottom: 4, 
+                                              left: 0, // TWEAKED: Stretches across the full card to allow centering
+                                              right: 0, // TWEAKED: Stretches across the full card to allow centering
                                               child: Row(
+                                                mainAxisAlignment: MainAxisAlignment.center, // TWEAKED: Forces the buttons into the center
                                                 children: [
                                                   if (!isPrinted) ...[
                                                     _cardActionButton(Icons.print_outlined, () async {
                                                       await _supabase.from('orders').update({'status': 'printed'}).eq('id', order['id']);
                                                       await PrinterService().printBillForTable(0, orderId: order['id']); 
                                                     }),
-                                                    const SizedBox(width: 4),
+                                                    const SizedBox(width: 8), // TWEAKED: Slightly wider gap
                                                   ],
                                                   _cardActionButton(Icons.check_circle_outline, () => _showSettleDialog(order, customerName, isPickup: true)),
                                                 ],

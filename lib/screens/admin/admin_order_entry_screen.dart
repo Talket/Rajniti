@@ -7,7 +7,7 @@ import '../../state/cart_provider.dart';
 class AdminOrderEntryScreen extends StatefulWidget {
   final int tableId;
   final bool isAppendMode;
-  final dynamic orderId; // CRITICAL FIX: Changed from int? to dynamic to support UUID
+  final dynamic orderId; 
 
   const AdminOrderEntryScreen({
     super.key, 
@@ -54,17 +54,14 @@ class _AdminOrderEntryScreenState extends State<AdminOrderEntryScreen> {
         _tableName = "Pickup";
       }
 
-      final catRes = await _supabase.from('menu_categories').select().order('id');
-      
-      // CHANGED: Fetch items ordered by favourite_sort_order first!
+      // CHANGED: Fetch ordered by our new sort_order column
+      final catRes = await _supabase.from('menu_categories').select().order('sort_order', ascending: true).order('id');
       final itemsRes = await _supabase.from('menu_items').select().order('favourite_sort_order', ascending: true).order('name');
       final commentsRes = await _supabase.from('order_comments_master').select().order('id'); 
       
       if (mounted) {
         setState(() {
           _categories = List<Map<String, dynamic>>.from(catRes);
-          
-          // ADDED: Inject the Favourites tab back into the sidebar
           _categories.insert(0, {'id': -1, 'name': '⭐️ Favourites'});
           
           _allItems = List<Map<String, dynamic>>.from(itemsRes);
@@ -75,7 +72,6 @@ class _AdminOrderEntryScreenState extends State<AdminOrderEntryScreen> {
           _isLoading = false;
         });
 
-        // Initialize cart provider and load existing name if any
         final provider = context.read<CartProvider>();
         await provider.loadExistingOrder(widget.tableId, appendMode: widget.isAppendMode, specificOrderId: widget.orderId);
         if (provider.customerName != null) {
@@ -92,7 +88,6 @@ class _AdminOrderEntryScreenState extends State<AdminOrderEntryScreen> {
     final provider = context.read<CartProvider>();
     if (provider.items.isEmpty && !provider.hasExistingOrder) return;
     
-    // Save customer name before processing
     provider.setCustomerName(_nameController.text.trim());
 
     String? error;
@@ -146,7 +141,7 @@ class _AdminOrderEntryScreenState extends State<AdminOrderEntryScreen> {
                           value: isSelected,
                           onChanged: (bool? value) {
                             provider.toggleComment(commentStr);
-                            setDialogState(() {}); // Rebuild dialog
+                            setDialogState(() {}); 
                           },
                         );
                       },
@@ -210,15 +205,12 @@ class _AdminOrderEntryScreenState extends State<AdminOrderEntryScreen> {
     final cartProvider = context.watch<CartProvider>();
     final newItemsTotal = cartProvider.calculateTotal(_allItems);
     
-    // CALCULATE SUBTOTAL BEFORE DISCOUNT
      final subTotal = cartProvider.isAppendMode && cartProvider.hasExistingOrder
         ? cartProvider.existingTotal + newItemsTotal 
         : newItemsTotal;
         
-    // CALCULATE FINAL GRAND TOTAL
     final grandTotal = subTotal - cartProvider.discount;
     
-    // CRITICAL FIX: Handle logic when "Favourites" (-1) is selected
     final displayItems = _allItems.where((item) {
       if (item['is_available'] != true) return false;
       if (_selectedCategoryId == -1) return item['is_favourite'] == true;
@@ -226,7 +218,7 @@ class _AdminOrderEntryScreenState extends State<AdminOrderEntryScreen> {
     }).toList();
 
     return Scaffold(
-      backgroundColor: const Color(0xFFF0F2F5), // Light background
+      backgroundColor: const Color(0xFFF0F2F5),
       appBar: AppBar(
         title: Text(
           widget.tableId == 0 
@@ -244,7 +236,6 @@ class _AdminOrderEntryScreenState extends State<AdminOrderEntryScreen> {
       body: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // 1. LEFT SIDEBAR: Categories
           Container(
             width: 220,
             color: Colors.white,
@@ -255,7 +246,7 @@ class _AdminOrderEntryScreenState extends State<AdminOrderEntryScreen> {
                 final category = _categories[index];
                 final isSelected = category['id'] == _selectedCategoryId;
                 return Material(
-                  color: isSelected ? const Color(0xFFFFF0F0) : Colors.transparent, // Light red tint for selected
+                  color: isSelected ? const Color(0xFFFFF0F0) : Colors.transparent,
                   child: InkWell(
                     onTap: () => setState(() => _selectedCategoryId = category['id']),
                     child: Container(
@@ -283,7 +274,6 @@ class _AdminOrderEntryScreenState extends State<AdminOrderEntryScreen> {
             ),
           ),
           
-          // 2. MIDDLE AREA: Menu Items Grid
           Expanded(
             child: Container(
               padding: const EdgeInsets.all(12),
@@ -292,7 +282,7 @@ class _AdminOrderEntryScreenState extends State<AdminOrderEntryScreen> {
                 : GridView.builder(
                     gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
                       maxCrossAxisExtent: 200,
-                      childAspectRatio: 2.2, // Rectangular buttons
+                      childAspectRatio: 2.2, 
                       crossAxisSpacing: 12,
                       mainAxisSpacing: 12,
                     ),
@@ -323,13 +313,11 @@ class _AdminOrderEntryScreenState extends State<AdminOrderEntryScreen> {
             ),
           ),
           
-          // 3. RIGHT SIDEBAR: Cart / Order Details
           Container(
-            width: 400, // Fixed width for Cart
+            width: 400, 
             color: Colors.white,
             child: Column(
               children: [
-                // Top Header (Table Indicator & Name Input)
                 Container(
                   padding: const EdgeInsets.all(12),
                   decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: Colors.black12))),
@@ -349,7 +337,6 @@ class _AdminOrderEntryScreenState extends State<AdminOrderEntryScreen> {
                             ),
                           ),
                           const SizedBox(width: 12),
-                          // The Comments Button
                           InkWell(
                             onTap: () => _showCommentsDialog(cartProvider),
                             child: Container(
@@ -398,7 +385,6 @@ class _AdminOrderEntryScreenState extends State<AdminOrderEntryScreen> {
                   ),
                 ),
                 
-                // Cart Headers
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                   decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: Colors.black12))),
@@ -411,7 +397,6 @@ class _AdminOrderEntryScreenState extends State<AdminOrderEntryScreen> {
                   ),
                 ),
                 
-                // Cart Items List
                 Expanded(
                   child: cartProvider.items.isEmpty
                       ? const Center(child: Text('No items added', style: TextStyle(color: Colors.grey)))
@@ -431,14 +416,12 @@ class _AdminOrderEntryScreenState extends State<AdminOrderEntryScreen> {
                               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
                               child: Row(
                                 children: [
-                                  // Delete Button
                                   InkWell(
                                     onTap: () => cartProvider.removeItem(itemId),
                                     child: const Icon(Icons.cancel, color: Colors.red, size: 20),
                                   ),
                                   const SizedBox(width: 8),
                                   
-                                  // Item Name
                                   Expanded(
                                     flex: 4,
                                     child: Text(
@@ -447,7 +430,6 @@ class _AdminOrderEntryScreenState extends State<AdminOrderEntryScreen> {
                                     ),
                                   ),
                                   
-                                  // Qty Control
                                   Expanded(
                                     flex: 3,
                                     child: Row(
@@ -477,7 +459,6 @@ class _AdminOrderEntryScreenState extends State<AdminOrderEntryScreen> {
                                     ),
                                   ),
                                   
-                                  // Price
                                   Expanded(
                                     flex: 2,
                                     child: Column(
@@ -495,7 +476,6 @@ class _AdminOrderEntryScreenState extends State<AdminOrderEntryScreen> {
                         ),
                 ),
                 
-                // Total Area
                  Container(
                   padding: const EdgeInsets.all(16),
                   decoration: const BoxDecoration(border: Border(top: BorderSide(color: Colors.black12)), color: Color(0xFFF9F9F9)),
@@ -562,7 +542,6 @@ class _AdminOrderEntryScreenState extends State<AdminOrderEntryScreen> {
                   ),
                 ),
                 
-                // Action Buttons
                 Padding(
                   padding: const EdgeInsets.all(8.0),
                   child: Wrap(
@@ -571,7 +550,7 @@ class _AdminOrderEntryScreenState extends State<AdminOrderEntryScreen> {
                     alignment: WrapAlignment.center,
                     children: [
                       _buildActionButton('Save & Print', const Color(0xFFD32F2F), () => _handleAction('PRINT'), cartProvider),
-                      _buildActionButton('Save & EBill', const Color(0xFFD32F2F), () => _handleAction('KOT'), cartProvider), // Maps to Save for now
+                      _buildActionButton('Save & EBill', const Color(0xFFD32F2F), () => _handleAction('KOT'), cartProvider), 
                       _buildActionButton('KOT', const Color(0xFF546E7A), () => _handleAction('KOT'), cartProvider),
                       _buildActionButton('KOT & Print', const Color(0xFF546E7A), () => _handleAction('PRINT'), cartProvider),
                     ],

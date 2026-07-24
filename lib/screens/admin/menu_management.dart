@@ -25,16 +25,15 @@ class _MenuManagementViewState extends State<MenuManagementView> {
   Future<void> _fetchCategories() async {
     setState(() => _isLoading = true);
     try {
-      final response = await _supabase.from('menu_categories').select().order('id');
+      // CHANGED: Fetch ordered by our new sort_order column
+      final response = await _supabase.from('menu_categories').select().order('sort_order', ascending: true).order('id');
       setState(() {
         _categories = List<Map<String, dynamic>>.from(response);
         
-        // ADDED: Inject Favourites into the Menu Master so you can manage them!
-        _categories.insert(0, {'id': -1, 'name': '⭐️ Favourites'});
-        
-        if (_categories.isNotEmpty && _selectedCategoryId == null) {
-          _selectedCategoryId = _categories.first['id'];
-          _fetchItems(_selectedCategoryId!);
+        // CHANGED: Set Favourites (-1) as default, and separated it from the reorderable DB list!
+        if (_selectedCategoryId == null) {
+          _selectedCategoryId = -1;
+          _fetchItems(-1);
         } else {
           _isLoading = false;
         }
@@ -48,7 +47,6 @@ class _MenuManagementViewState extends State<MenuManagementView> {
   Future<void> _fetchItems(int categoryId) async {
     setState(() => _isLoading = true);
     try {
-      // ADDED: If Favourites is selected, filter by is_favourite and order by our new sort column!
       final response = categoryId == -1 
           ? await _supabase.from('menu_items').select().eq('is_favourite', true).order('favourite_sort_order', ascending: true).order('name')
           : await _supabase.from('menu_items').select().eq('category_id', categoryId).order('name');
@@ -64,14 +62,14 @@ class _MenuManagementViewState extends State<MenuManagementView> {
   }
 
   Future<void> _deleteCategory(int id) async {
-    if (id == -1) return; // Prevent deleting the Favourites tab
+    if (id == -1) return; 
     
     final confirm = await _showConfirmDialog('Delete Category', 'This will remove the category and all items inside it if cascade is enabled. Are you sure?');
     if (!confirm) return;
 
     try {
       await _supabase.from('menu_categories').delete().eq('id', id);
-      _selectedCategoryId = null;
+      _selectedCategoryId = -1; // Reset to favourites safely
       _fetchCategories();
     } catch (e) {
       debugPrint('Error deleting category: $e');
@@ -138,7 +136,6 @@ class _MenuManagementViewState extends State<MenuManagementView> {
       
       setState(() {
         if (_selectedCategoryId == -1 && !isFavourite) {
-          // If we are IN the Favourites tab and we un-star it, instantly remove it from the list
           _items.removeWhere((item) => item['id'] == itemId);
         } else {
           final index = _items.indexWhere((item) => item['id'] == itemId);
@@ -166,7 +163,10 @@ class _MenuManagementViewState extends State<MenuManagementView> {
             onPressed: () async {
               if (controller.text.trim().isEmpty) return;
               Navigator.pop(context);
-              await _supabase.from('menu_categories').insert({'name': controller.text.trim()});
+              await _supabase.from('menu_categories').insert({
+                'name': controller.text.trim(),
+                'sort_order': _categories.length // Put it at the bottom by default
+              });
               _fetchCategories();
             },
             child: const Text('Save'),
@@ -177,7 +177,7 @@ class _MenuManagementViewState extends State<MenuManagementView> {
   }
 
   void _showAddItemDialog() {
-    if (_selectedCategoryId == null || _selectedCategoryId == -1) return; // Prevent adding directly to favourites
+    if (_selectedCategoryId == null || _selectedCategoryId == -1) return; 
     final nameController = TextEditingController();
     final priceController = TextEditingController();
     
@@ -217,13 +217,12 @@ class _MenuManagementViewState extends State<MenuManagementView> {
 
   @override
   Widget build(BuildContext context) {
-    // Helper function to build a list tile so we don't repeat code between normal and reorderable lists
     Widget buildItemTile(Map<String, dynamic> item) {
       final isAvailable = item['is_available'] ?? true;
       final isFavourite = item['is_favourite'] == true;
       
       return ListTile(
-        key: ValueKey(item['id']), // REQUIRED FOR REORDERABLE DRAG & DROP
+        key: ValueKey(item['id']), 
         leading: _selectedCategoryId == -1 ? const Icon(Icons.drag_handle, color: Colors.black38) : null,
         title: Text(item['name'], style: TextStyle(fontWeight: FontWeight.w500, color: isAvailable ? Colors.black : Colors.grey)),
         trailing: Row(
@@ -231,7 +230,6 @@ class _MenuManagementViewState extends State<MenuManagementView> {
           children: [
             Text('₹${item['price']}', style: const TextStyle(fontSize: 16, color: Colors.green)),
             const SizedBox(width: 8),
-            // Favourite Star Button
             IconButton(
               icon: Icon(
                 isFavourite ? Icons.star : Icons.star_border,
@@ -263,23 +261,63 @@ class _MenuManagementViewState extends State<MenuManagementView> {
                 ),
                 const Divider(height: 1),
                 Expanded(
-                  child: ListView.builder(
-                    itemCount: _categories.length,
-                    itemBuilder: (context, index) {
-                      final cat = _categories[index];
-                      final isSelected = cat['id'] == _selectedCategoryId;
-                      return ListTile(
-                        title: Text(cat['name']),
-                        selected: isSelected,
+                  child: Column(
+                    children: [
+                      // STATIC PINNED FAVOURITES TAB
+                      ListTile(
+                        title: const Text('⭐️ Favourites'),
+                        selected: _selectedCategoryId == -1,
                         selectedTileColor: Colors.blue.withOpacity(0.1),
-                        // Hide the delete button for the Favourites category
-                        trailing: cat['id'] == -1 ? null : IconButton(icon: const Icon(Icons.delete, size: 18, color: Colors.redAccent), onPressed: () => _deleteCategory(cat['id'])),
                         onTap: () {
-                          setState(() => _selectedCategoryId = cat['id']);
-                          _fetchItems(cat['id']);
+                          setState(() => _selectedCategoryId = -1);
+                          _fetchItems(-1);
                         },
-                      );
-                    },
+                      ),
+                      const Divider(height: 1),
+                      // REORDERABLE DATABASE CATEGORIES
+                      Expanded(
+                        child: ReorderableListView.builder(
+                          itemCount: _categories.length,
+                          onReorder: (oldIndex, newIndex) async {
+                            if (oldIndex < newIndex) newIndex -= 1;
+                            setState(() {
+                              final cat = _categories.removeAt(oldIndex);
+                              _categories.insert(newIndex, cat);
+                            });
+                            
+                            try {
+                              final futures = <Future>[];
+                              for (int i = 0; i < _categories.length; i++) {
+                                _categories[i]['sort_order'] = i;
+                                futures.add(_supabase.from('menu_categories').update({'sort_order': i}).eq('id', _categories[i]['id']));
+                              }
+                              await Future.wait(futures);
+                            } catch (e) {
+                              debugPrint('Error reordering categories: $e');
+                            }
+                          },
+                          itemBuilder: (context, index) {
+                            final cat = _categories[index];
+                            final isSelected = cat['id'] == _selectedCategoryId;
+                            return ListTile(
+                              key: ValueKey(cat['id']), // REQUIRED FOR REORDERABLE
+                              leading: const Icon(Icons.drag_handle, color: Colors.black38),
+                              title: Text(cat['name']),
+                              selected: isSelected,
+                              selectedTileColor: Colors.blue.withOpacity(0.1),
+                              trailing: IconButton(
+                                icon: const Icon(Icons.delete, size: 18, color: Colors.redAccent), 
+                                onPressed: () => _deleteCategory(cat['id'])
+                              ),
+                              onTap: () {
+                                setState(() => _selectedCategoryId = cat['id']);
+                                _fetchItems(cat['id']);
+                              },
+                            );
+                          },
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               ],
@@ -300,7 +338,6 @@ class _MenuManagementViewState extends State<MenuManagementView> {
                     child: _isLoading 
                       ? const Center(child: CircularProgressIndicator()) 
                       : _selectedCategoryId == -1
-                        // ADDED: The beautifully draggable list view for custom sorting!
                         ? ReorderableListView.builder(
                             itemCount: _items.length,
                             onReorder: (oldIndex, newIndex) async {
@@ -310,7 +347,6 @@ class _MenuManagementViewState extends State<MenuManagementView> {
                                 _items.insert(newIndex, item);
                               });
                               
-                              // Save the new sequence to Supabase instantly
                               try {
                                 final futures = <Future>[];
                                 for (int i = 0; i < _items.length; i++) {
