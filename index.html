@@ -35,20 +35,6 @@
 </head>
 
 <body>
-  <!-- FORCE CANVAS-KIT RENDERER FOR HIGH PERFORMANCE -->
-  <script>
-    window._flutter = {
-      loader: {
-        didCreateEngineInitializer: async function (engineInitializer) {
-          const appRunner = await engineInitializer.initializeEngine({
-            renderer: 'canvaskit', // <--- Forces hardware acceleration
-          });
-          await appRunner.runApp();
-        }
-      }
-    };
-  </script>
-
   <script src="flutter_bootstrap.js" async></script>
 </body>
 
