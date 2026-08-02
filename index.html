@@ -35,7 +35,12 @@
 </head>
 
 <body>
-  <script src="flutter_bootstrap.js" async></script>
+  <!-- 
+    CRITICAL CACHE FIX: 
+    By adding ?v=2 (a version query), we force the browser to bypass its 
+    stubborn cache and immediately download the newest code from GitHub!
+  -->
+  <script src="flutter_bootstrap.js?v=2" async></script>
 </body>
 
 </html>
